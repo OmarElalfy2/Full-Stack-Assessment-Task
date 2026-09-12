@@ -29,7 +29,7 @@ export class TasksService {
     private readonly projectAccessService: ProjectAccessService,
     private readonly usersService: UsersService,
     private readonly taskActivityService: TaskActivityService,
-  ) {}
+  ) { }
 
   async findByProject(
     projectId: Types.ObjectId,
@@ -121,94 +121,19 @@ export class TasksService {
     return this.toDetail(task, access.project);
   }
 
-  /**
-   * Sets or clears a task's assignee.
-   *
-   * Rules (Part Six of the brief):
-   *  - The assignee, if any, must be an explicit member of the task's
-   *    project — elevated org-role access alone does not make someone
-   *    assignable.
-   *  - OWNER / ADMIN / PROJECT_MANAGER may assign to, or unassign, anyone.
-   *  - A regular project member may only assign the task to themselves, or
-   *    remove their own existing assignment. Any other change they attempt
-   *    is forbidden.
-   *  - A call that doesn't actually change the assignee is a no-op and
-   *    skips the "who may change this" check entirely.
-   */
-  async assignTask(
+
+  async updateStatus(
     taskId: Types.ObjectId,
-    actingUserId: Types.ObjectId,
-    dto: AssignTaskDto,
+    userId: Types.ObjectId,
+    dto: UpdateTaskStatusDto,
   ): Promise<TaskDetail> {
     const task = await this.findTaskOrFail(taskId);
-    const access = await this.projectAccessService.assertCanView(task.projectId, actingUserId);
-
-    const previousAssigneeId = task.assignee ?? null;
-    const nextAssigneeId = dto.assigneeId ? toObjectId(dto.assigneeId, 'assignee id') : null;
-
-    if (idsEqual(previousAssigneeId, nextAssigneeId)) {
-      return this.toDetail(task, access.project);
-    }
-
-    this.assertCanChangeAssignee(access, actingUserId, previousAssigneeId, nextAssigneeId);
-
-    if (nextAssigneeId) {
-      const isMember = await this.projectAccessService.isProjectMember(
-        task.projectId,
-        nextAssigneeId,
-      );
-      if (!isMember) {
-        throw new BadRequestException('Assignee must be a member of this project');
-      }
-    }
-
-    task.assignee = nextAssigneeId;
-    await task.save();
-
-    // Not wrapped in a transaction: mongodb-memory-server (and this
-    // project's dev setup) runs a standalone MongoDB, which doesn't support
-    // multi-document transactions, and no other write path in this codebase
-    // uses one either (see `remove()` above). If the process crashes between
-    // these two writes, the assignment change lands without its log entry —
-    // an acceptable gap for an activity trail, not for the data it describes.
-    await this.taskActivityService.recordAssigneeChanged(
-      task._id,
-      actingUserId,
-      previousAssigneeId,
-      nextAssigneeId,
-    );
-
-    return this.toDetail(task, access.project);
-  }
-
-  private assertCanChangeAssignee(
-    access: ProjectAccessContext,
-    actorId: Types.ObjectId,
-    previousAssigneeId: Types.ObjectId | null,
-    nextAssigneeId: Types.ObjectId | null,
-  ): void {
-    if (canManage(access)) {
-      return;
-    }
-
-    const assigningSelf = nextAssigneeId !== null && nextAssigneeId.equals(actorId);
-    const removingOwnAssignment =
-      nextAssigneeId === null && previousAssigneeId !== null && previousAssigneeId.equals(actorId);
-
-    if (!assigningSelf && !removingOwnAssignment) {
-      throw new ForbiddenException(
-        'Only a project manager, admin or owner can assign this task to someone else',
-      );
-    }
-  }
-
-  async updateStatus(taskId: Types.ObjectId, dto: UpdateTaskStatusDto): Promise<TaskDetail> {
-    const task = await this.findTaskOrFail(taskId);
+    const access = await this.projectAccessService.assertCanView(task.projectId, userId);
 
     task.status = dto.status;
     await task.save();
 
-    return this.toDetail(task);
+    return this.toDetail(task, access.project);
   }
 
   async remove(taskId: Types.ObjectId, userId: Types.ObjectId): Promise<void> {

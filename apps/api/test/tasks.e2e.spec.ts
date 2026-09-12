@@ -9,6 +9,7 @@ import {
   authHeader,
   createOrganization,
   createProject,
+  createTask,
   registerUser,
   type TestUser,
 } from './utils/fixtures';
@@ -145,5 +146,47 @@ describe('Tasks', () => {
 
     expect(response.body.total).toBe(1);
     expect(response.body.items[0]).toMatchObject({ title: 'Work in flight' });
+  });
+
+  describe('PATCH /tasks/:taskId/status', () => {
+    // Regression coverage for the reported production bug: "some users
+    // appear to be able to modify tasks belonging to projects they are not
+    // members of". Root cause was that this endpoint never checked project
+    // access at all — see BUG_REPORT.md.
+    it('refuses to change status for someone outside the project', async () => {
+      const taskId = await createTask(
+        connection,
+        projectId,
+        'ENG',
+        1,
+        'Ship the release',
+        owner.id,
+      );
+
+      await request(app.getHttpServer())
+        .patch(`/tasks/${taskId}/status`)
+        .set('Authorization', authHeader(outsider))
+        .send({ status: TaskStatus.DONE })
+        .expect(403);
+    });
+
+    it('lets a project member change task status', async () => {
+      const taskId = await createTask(
+        connection,
+        projectId,
+        'ENG',
+        1,
+        'Ship the release',
+        owner.id,
+      );
+
+      const response = await request(app.getHttpServer())
+        .patch(`/tasks/${taskId}/status`)
+        .set('Authorization', authHeader(member))
+        .send({ status: TaskStatus.DONE })
+        .expect(200);
+
+      expect(response.body.status).toBe(TaskStatus.DONE);
+    });
   });
 });

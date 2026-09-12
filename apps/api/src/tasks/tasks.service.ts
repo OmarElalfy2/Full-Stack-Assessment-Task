@@ -11,6 +11,7 @@ import type { CreateTaskDto } from './dto/create-task.dto';
 import type { ListTasksQueryDto } from './dto/list-tasks.dto';
 import type { UpdateTaskDto } from './dto/update-task.dto';
 import type { UpdateTaskStatusDto } from './dto/update-task-status.dto';
+import { TaskCounter, type TaskCounterDocument } from './schemas/task-counter.schema';
 import { Task, type TaskDocument } from './schemas/task.schema';
 
 @Injectable()
@@ -19,6 +20,7 @@ export class TasksService {
     @InjectModel(Task.name) private readonly taskModel: Model<TaskDocument>,
     @InjectModel(Project.name) private readonly projectModel: Model<ProjectDocument>,
     @InjectModel(Comment.name) private readonly commentModel: Model<CommentDocument>,
+    @InjectModel(TaskCounter.name) private readonly taskCounterModel: Model<TaskCounterDocument>,
     private readonly projectAccessService: ProjectAccessService,
     private readonly usersService: UsersService,
   ) {}
@@ -58,8 +60,7 @@ export class TasksService {
   ): Promise<TaskDetail> {
     const { project } = await this.projectAccessService.assertCanView(projectId, userId);
 
-    const taskCount = await this.taskModel.countDocuments({ projectId });
-    const number = taskCount + 1;
+    const number = await this.nextTaskNumber(projectId);
 
     const task = await this.taskModel.create({
       projectId,
@@ -73,6 +74,27 @@ export class TasksService {
     });
 
     return this.toDetail(task, project);
+  }
+
+  /**
+   * Atomically issues the next task number for a project.
+   *
+   * The previous implementation did `countDocuments` then `count + 1`,
+   * which reads and writes in two separate steps: two requests racing
+   * between the read and the write can both compute the same number.
+   * `findOneAndUpdate` with `$inc` collapses that into one atomic operation
+   * — MongoDB serializes concurrent updates to the same document, so there
+   * is no window for two callers to observe the same value. `upsert: true`
+   * seeds the counter at `0 -> 1` the first time a project creates a task,
+   * without needing a separate "create the counter" step when the project
+   * itself is created.
+   */
+  private async nextTaskNumber(projectId: Types.ObjectId): Promise<number> {
+    const counter = await this.taskCounterModel
+      .findOneAndUpdate({ _id: projectId }, { $inc: { seq: 1 } }, { upsert: true, new: true })
+      .exec();
+
+    return counter.seq;
   }
 
   async findOne(taskId: Types.ObjectId, userId: Types.ObjectId): Promise<TaskDetail> {

@@ -1,12 +1,18 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { type FilterQuery, Model, Types } from 'mongoose';
 import type { Paginated, TaskDetail, TaskSummary } from '@projectflow/shared';
+import { toObjectId } from '../common/utils/object-id';
 import { toUserSummary } from '../common/utils/serialize';
 import { Comment, type CommentDocument } from '../comments/schemas/comment.schema';
-import { canManage, ProjectAccessService } from '../projects/project-access.service';
+import {
+  canManage,
+  ProjectAccessService,
+  type ProjectAccessContext,
+} from '../projects/project-access.service';
 import { Project, type ProjectDocument } from '../projects/schemas/project.schema';
 import { UsersService } from '../users/users.service';
+import type { AssignTaskDto } from './dto/assign-task.dto';
 import type { CreateTaskDto } from './dto/create-task.dto';
 import type { ListTasksQueryDto } from './dto/list-tasks.dto';
 import type { UpdateTaskDto } from './dto/update-task.dto';
@@ -113,6 +119,74 @@ export class TasksService {
     return this.toDetail(task, access.project);
   }
 
+  /**
+   * Sets or clears a task's assignee.
+   *
+   * Rules (Part Six of the brief):
+   *  - The assignee, if any, must be an explicit member of the task's
+   *    project — elevated org-role access alone does not make someone
+   *    assignable.
+   *  - OWNER / ADMIN / PROJECT_MANAGER may assign to, or unassign, anyone.
+   *  - A regular project member may only assign the task to themselves, or
+   *    remove their own existing assignment. Any other change they attempt
+   *    is forbidden.
+   *  - A call that doesn't actually change the assignee is a no-op and
+   *    skips the "who may change this" check entirely.
+   */
+  async assignTask(
+    taskId: Types.ObjectId,
+    actingUserId: Types.ObjectId,
+    dto: AssignTaskDto,
+  ): Promise<TaskDetail> {
+    const task = await this.findTaskOrFail(taskId);
+    const access = await this.projectAccessService.assertCanView(task.projectId, actingUserId);
+
+    const previousAssigneeId = task.assignee ?? null;
+    const nextAssigneeId = dto.assigneeId ? toObjectId(dto.assigneeId, 'assignee id') : null;
+
+    if (idsEqual(previousAssigneeId, nextAssigneeId)) {
+      return this.toDetail(task, access.project);
+    }
+
+    this.assertCanChangeAssignee(access, actingUserId, previousAssigneeId, nextAssigneeId);
+
+    if (nextAssigneeId) {
+      const isMember = await this.projectAccessService.isProjectMember(
+        task.projectId,
+        nextAssigneeId,
+      );
+      if (!isMember) {
+        throw new BadRequestException('Assignee must be a member of this project');
+      }
+    }
+
+    task.assignee = nextAssigneeId;
+    await task.save();
+
+    return this.toDetail(task, access.project);
+  }
+
+  private assertCanChangeAssignee(
+    access: ProjectAccessContext,
+    actorId: Types.ObjectId,
+    previousAssigneeId: Types.ObjectId | null,
+    nextAssigneeId: Types.ObjectId | null,
+  ): void {
+    if (canManage(access)) {
+      return;
+    }
+
+    const assigningSelf = nextAssigneeId !== null && nextAssigneeId.equals(actorId);
+    const removingOwnAssignment =
+      nextAssigneeId === null && previousAssigneeId !== null && previousAssigneeId.equals(actorId);
+
+    if (!assigningSelf && !removingOwnAssignment) {
+      throw new ForbiddenException(
+        'Only a project manager, admin or owner can assign this task to someone else',
+      );
+    }
+  }
+
   async updateStatus(taskId: Types.ObjectId, dto: UpdateTaskStatusDto): Promise<TaskDetail> {
     const task = await this.findTaskOrFail(taskId);
 
@@ -142,8 +216,16 @@ export class TasksService {
       return [];
     }
 
-    const [creators, commentRows] = await Promise.all([
-      this.usersService.findManyByIds(tasks.map((task) => task.createdBy)),
+    const userIds = new Map<string, Types.ObjectId>();
+    for (const task of tasks) {
+      userIds.set(task.createdBy.toString(), task.createdBy);
+      if (task.assignee) {
+        userIds.set(task.assignee.toString(), task.assignee);
+      }
+    }
+
+    const [users, commentRows] = await Promise.all([
+      this.usersService.findManyByIds([...userIds.values()]),
       this.commentModel
         .aggregate<{
           _id: Types.ObjectId;
@@ -155,7 +237,7 @@ export class TasksService {
         .exec(),
     ]);
 
-    const creatorsById = new Map(creators.map((user) => [user._id.toString(), user]));
+    const usersById = new Map(users.map((user) => [user._id.toString(), user]));
     const commentCounts = new Map(commentRows.map((row) => [row._id.toString(), row.count]));
 
     return tasks.map((task) => ({
@@ -167,7 +249,10 @@ export class TasksService {
       status: task.status,
       priority: task.priority,
       commentCount: commentCounts.get(task._id.toString()) ?? 0,
-      createdBy: toCreatorSummary(creatorsById.get(task.createdBy.toString())),
+      createdBy: toKnownOrDeletedUser(usersById.get(task.createdBy.toString())),
+      assignee: task.assignee
+        ? toKnownOrDeletedUser(usersById.get(task.assignee.toString()))
+        : null,
       createdAt: task.createdAt.toISOString(),
       updatedAt: task.updatedAt.toISOString(),
     }));
@@ -200,6 +285,13 @@ const DELETED_USER = {
   avatarUrl: null,
 };
 
-function toCreatorSummary(user: Parameters<typeof toUserSummary>[0] | undefined) {
+function toKnownOrDeletedUser(user: Parameters<typeof toUserSummary>[0] | undefined) {
   return user ? toUserSummary(user) : DELETED_USER;
+}
+
+function idsEqual(a: Types.ObjectId | null, b: Types.ObjectId | null): boolean {
+  if (a === null || b === null) {
+    return a === b;
+  }
+  return a.equals(b);
 }

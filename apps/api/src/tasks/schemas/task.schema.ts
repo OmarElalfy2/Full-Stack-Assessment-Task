@@ -36,6 +36,10 @@ export class Task {
   @Prop({ type: Types.ObjectId, ref: 'User', required: true })
   createdBy: Types.ObjectId;
 
+  /** The project member who owns the task. Null when unassigned. */
+  @Prop({ type: Types.ObjectId, ref: 'User', default: null })
+  assignee: Types.ObjectId | null;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -45,3 +49,5 @@ export const TaskSchema = SchemaFactory.createForClass(Task);
 TaskSchema.index({ projectId: 1, status: 1 });
 TaskSchema.index({ projectId: 1, number: 1 });
 TaskSchema.index({ createdAt: -1 });
+/** Supports "tasks assigned to me within this project" lookups. */
+TaskSchema.index({ projectId: 1, assignee: 1 });

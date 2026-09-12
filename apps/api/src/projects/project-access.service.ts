@@ -68,6 +68,20 @@ export class ProjectAccessService {
     }
     return context;
   }
+
+  /**
+   * Whether the user holds an explicit `ProjectMember` row for this project.
+   *
+   * This is intentionally narrower than `canView`: an OWNER/ADMIN can view
+   * and manage every project in the organization without ever being added
+   * as a member of any one of them. Features that need "actually on this
+   * project's roster" (e.g. who may be assigned a task) should check this
+   * instead of `canView`.
+   */
+  async isProjectMember(projectId: Types.ObjectId, userId: Types.ObjectId): Promise<boolean> {
+    const projectRole = await this.projectMembersService.findRole(projectId, userId);
+    return projectRole !== null;
+  }
 }
 
 export function canView(context: ProjectAccessContext): boolean {

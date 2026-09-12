@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { OrganizationMembersModule } from '../organization-members/organization-members.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { ProjectMembersModule } from '../project-members/project-members.module';
+import { TaskCounter, TaskCounterSchema } from '../tasks/schemas/task-counter.schema';
 import { Task, TaskSchema } from '../tasks/schemas/task.schema';
 import { UsersModule } from '../users/users.module';
 import { ProjectAccessService } from './project-access.service';
@@ -15,6 +16,7 @@ import { Project, ProjectSchema } from './schemas/project.schema';
     MongooseModule.forFeature([
       { name: Project.name, schema: ProjectSchema },
       { name: Task.name, schema: TaskSchema },
+      { name: TaskCounter.name, schema: TaskCounterSchema },
     ]),
     OrganizationsModule,
     OrganizationMembersModule,

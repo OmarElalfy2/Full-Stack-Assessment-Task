@@ -18,6 +18,7 @@ import { OrganizationMembersService } from '../organization-members/organization
 import { OrganizationsService } from '../organizations/organizations.service';
 import type { AddProjectMemberDto } from '../project-members/dto/add-project-member.dto';
 import { ProjectMembersService } from '../project-members/project-members.service';
+import { TaskCounter, type TaskCounterDocument } from '../tasks/schemas/task-counter.schema';
 import { Task, type TaskDocument } from '../tasks/schemas/task.schema';
 import { UsersService } from '../users/users.service';
 import type { CreateProjectDto } from './dto/create-project.dto';
@@ -29,6 +30,7 @@ export class ProjectsService {
   constructor(
     @InjectModel(Project.name) private readonly projectModel: Model<ProjectDocument>,
     @InjectModel(Task.name) private readonly taskModel: Model<TaskDocument>,
+    @InjectModel(TaskCounter.name) private readonly taskCounterModel: Model<TaskCounterDocument>,
     private readonly projectAccessService: ProjectAccessService,
     private readonly projectMembersService: ProjectMembersService,
     private readonly organizationMembersService: OrganizationMembersService,
@@ -138,6 +140,20 @@ export class ProjectsService {
       description: dto.description ?? null,
       createdBy: userId,
     });
+
+    // Created synchronously, right here, rather than lazily on first task
+    // creation (via `upsert: true` in TasksService.nextTaskNumber). A
+    // project can only be created once, so this moment has no concurrent
+    // writer to race against — which removes the one gap in the otherwise
+    // fully atomic counter: `findOneAndUpdate` with `upsert: true` is only
+    // guaranteed atomic once the target document already exists. Racing
+    // upserts against a not-yet-existing counter can, on a standalone
+    // MongoDB with no replica set (no retryable-writes safety net), both
+    // compute the same first value. `nextTaskNumber` still has
+    // `upsert: true` as a defensive fallback for any project whose counter
+    // is missing for another reason, but with this in place every new
+    // project's very first task creation never touches that path.
+    await this.taskCounterModel.create({ _id: project._id, seq: 0 });
 
     await this.projectMembersService.add(project._id, userId, ProjectRole.PROJECT_MANAGER);
 

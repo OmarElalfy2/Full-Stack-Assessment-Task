@@ -81,6 +81,16 @@ export async function createProject(
     createdAt: new Date(),
     updatedAt: new Date(),
   });
+  // Mirrors ProjectsService.create, which seeds a task counter row for
+  // every new project synchronously at creation time (see its comment for
+  // why: it's what keeps the very first task creation from racing on an
+  // upsert). Tests that go through this fixture instead of the real
+  // service need the same row, or a project's first task creation is
+  // exposed to the exact upsert race the real code path avoids.
+  await connection.collection('task_counters').insertOne({
+    _id: result.insertedId,
+    seq: 0,
+  });
   return result.insertedId.toString();
 }
 

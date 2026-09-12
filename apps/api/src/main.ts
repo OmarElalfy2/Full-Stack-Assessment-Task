@@ -23,10 +23,16 @@ async function bootstrap(): Promise<void> {
     }),
   );
 
-  const port = configService.get<number>('API_PORT') ?? 4732;
-  await app.listen(port);
+  const port =
+    configService.get<number>('PORT') ??
+    configService.get<number>('API_PORT') ??
+    4732;
 
-  new Logger('Bootstrap').log(`ProjectFlow API listening on http://localhost:${port}`);
+  await app.listen(port, '0.0.0.0');
+
+  new Logger('Bootstrap').log(
+    `ProjectFlow API listening on port ${port}`,
+  );
 }
 
 void bootstrap();

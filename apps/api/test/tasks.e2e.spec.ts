@@ -100,6 +100,35 @@ describe('Tasks', () => {
     ]);
   });
 
+  it('assigns unique, gap-free task numbers under concurrent creation', async () => {
+    // Regression coverage for the reported race: the previous
+    // `countDocuments` + `count + 1` approach reads and writes in two
+    // separate steps, so firing many creates at once (interleaved by
+    // Node's event loop the same way concurrent HTTP requests would be)
+    // could let two of them observe the same count. The fix makes issuing a
+    // number a single atomic `$inc`, so this must always come out unique.
+    const CONCURRENT_REQUESTS = 10;
+
+    const responses = await Promise.all(
+      Array.from({ length: CONCURRENT_REQUESTS }, (_, index) =>
+        request(app.getHttpServer())
+          .post(`/projects/${projectId}/tasks`)
+          .set('Authorization', authHeader(member))
+          .send({ title: `Concurrent task ${index}` }),
+      ),
+    );
+
+    for (const response of responses) {
+      expect(response.status).toBe(201);
+    }
+
+    const numbers = responses.map((response) => response.body.number as number);
+    expect(new Set(numbers).size).toBe(CONCURRENT_REQUESTS);
+    expect([...numbers].sort((a, b) => a - b)).toEqual(
+      Array.from({ length: CONCURRENT_REQUESTS }, (_, index) => index + 1),
+    );
+  });
+
   it('refuses to create a task for someone outside the project', async () => {
     await request(app.getHttpServer())
       .post(`/projects/${projectId}/tasks`)

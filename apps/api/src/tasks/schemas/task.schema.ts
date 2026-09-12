@@ -47,7 +47,11 @@ export class Task {
 export const TaskSchema = SchemaFactory.createForClass(Task);
 
 TaskSchema.index({ projectId: 1, status: 1 });
-TaskSchema.index({ projectId: 1, number: 1 });
+// Unique: a hard backstop at the database level, independent of the
+// application-level fix in TasksService.nextTaskNumber. If any future code
+// path ever creates a task without going through that method, this rejects
+// the write instead of silently producing a duplicate key.
+TaskSchema.index({ projectId: 1, number: 1 }, { unique: true });
 TaskSchema.index({ createdAt: -1 });
 /** Supports "tasks assigned to me within this project" lookups. */
 TaskSchema.index({ projectId: 1, assignee: 1 });

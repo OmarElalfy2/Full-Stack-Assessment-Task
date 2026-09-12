@@ -11,6 +11,7 @@ import {
   type ProjectAccessContext,
 } from '../projects/project-access.service';
 import { Project, type ProjectDocument } from '../projects/schemas/project.schema';
+import { TaskActivityService } from '../task-activity/task-activity.service';
 import { UsersService } from '../users/users.service';
 import type { AssignTaskDto } from './dto/assign-task.dto';
 import type { CreateTaskDto } from './dto/create-task.dto';
@@ -27,6 +28,7 @@ export class TasksService {
     @InjectModel(Comment.name) private readonly commentModel: Model<CommentDocument>,
     private readonly projectAccessService: ProjectAccessService,
     private readonly usersService: UsersService,
+    private readonly taskActivityService: TaskActivityService,
   ) {}
 
   async findByProject(
@@ -162,6 +164,19 @@ export class TasksService {
 
     task.assignee = nextAssigneeId;
     await task.save();
+
+    // Not wrapped in a transaction: mongodb-memory-server (and this
+    // project's dev setup) runs a standalone MongoDB, which doesn't support
+    // multi-document transactions, and no other write path in this codebase
+    // uses one either (see `remove()` above). If the process crashes between
+    // these two writes, the assignment change lands without its log entry —
+    // an acceptable gap for an activity trail, not for the data it describes.
+    await this.taskActivityService.recordAssigneeChanged(
+      task._id,
+      actingUserId,
+      previousAssigneeId,
+      nextAssigneeId,
+    );
 
     return this.toDetail(task, access.project);
   }

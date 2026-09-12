@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { Comment, CommentSchema } from '../comments/schemas/comment.schema';
 import { ProjectsModule } from '../projects/projects.module';
+import { TaskActivityModule } from '../task-activity/task-activity.module';
 import { UsersModule } from '../users/users.module';
 import { Task, TaskSchema } from './schemas/task.schema';
 import { TasksController } from './tasks.controller';
@@ -14,6 +15,7 @@ import { TasksService } from './tasks.service';
       { name: Comment.name, schema: CommentSchema },
     ]),
     ProjectsModule,
+    TaskActivityModule,
     UsersModule,
   ],
   controllers: [TasksController],

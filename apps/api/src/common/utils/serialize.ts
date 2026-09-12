@@ -23,3 +23,22 @@ export function toUserSummary(user: UserLike): UserSummary {
     avatarUrl: user.avatarUrl ?? null,
   };
 }
+
+/** Placeholder shown in place of a referenced user whose account no longer exists. */
+export const DELETED_USER: UserSummary = {
+  id: '',
+  name: 'Unknown user',
+  email: '',
+  avatarUrl: null,
+};
+
+/**
+ * Projects a possibly-missing user to a summary, falling back to
+ * `DELETED_USER` rather than dropping whatever record referenced them.
+ * Shared by every feature that resolves a batch of user ids (task
+ * creators/assignees, activity actors) so a deleted account degrades the
+ * same way everywhere instead of each call site inventing its own handling.
+ */
+export function toUserSummaryOrDeleted(user: UserLike | undefined): UserSummary {
+  return user ? toUserSummary(user) : DELETED_USER;
+}

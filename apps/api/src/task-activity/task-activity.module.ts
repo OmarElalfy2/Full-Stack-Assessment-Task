@@ -1,12 +1,24 @@
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
+import { ProjectsModule } from '../projects/projects.module';
+import { Task, TaskSchema } from '../tasks/schemas/task.schema';
+import { UsersModule } from '../users/users.module';
 import { TaskActivity, TaskActivitySchema } from './schemas/task-activity.schema';
+import { TaskActivityController } from './task-activity.controller';
 import { TaskActivityService } from './task-activity.service';
 
 @Module({
   imports: [
-    MongooseModule.forFeature([{ name: TaskActivity.name, schema: TaskActivitySchema }]),
+    MongooseModule.forFeature([
+      { name: TaskActivity.name, schema: TaskActivitySchema },
+      // Registered directly (not via TasksModule) to avoid a module cycle:
+      // TasksModule already imports this module for the write path.
+      { name: Task.name, schema: TaskSchema },
+    ]),
+    ProjectsModule,
+    UsersModule,
   ],
+  controllers: [TaskActivityController],
   providers: [TaskActivityService],
   exports: [TaskActivityService, MongooseModule],
 })

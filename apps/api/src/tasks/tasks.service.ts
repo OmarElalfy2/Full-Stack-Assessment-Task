@@ -3,7 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { type FilterQuery, Model, Types } from 'mongoose';
 import type { Paginated, TaskDetail, TaskSummary } from '@projectflow/shared';
 import { toObjectId } from '../common/utils/object-id';
-import { toUserSummary } from '../common/utils/serialize';
+import { toUserSummaryOrDeleted } from '../common/utils/serialize';
 import { Comment, type CommentDocument } from '../comments/schemas/comment.schema';
 import {
   canManage,
@@ -264,9 +264,9 @@ export class TasksService {
       status: task.status,
       priority: task.priority,
       commentCount: commentCounts.get(task._id.toString()) ?? 0,
-      createdBy: toKnownOrDeletedUser(usersById.get(task.createdBy.toString())),
+      createdBy: toUserSummaryOrDeleted(usersById.get(task.createdBy.toString())),
       assignee: task.assignee
-        ? toKnownOrDeletedUser(usersById.get(task.assignee.toString()))
+        ? toUserSummaryOrDeleted(usersById.get(task.assignee.toString()))
         : null,
       createdAt: task.createdAt.toISOString(),
       updatedAt: task.updatedAt.toISOString(),
@@ -291,17 +291,6 @@ export class TasksService {
       },
     };
   }
-}
-
-const DELETED_USER = {
-  id: '',
-  name: 'Unknown user',
-  email: '',
-  avatarUrl: null,
-};
-
-function toKnownOrDeletedUser(user: Parameters<typeof toUserSummary>[0] | undefined) {
-  return user ? toUserSummary(user) : DELETED_USER;
 }
 
 function idsEqual(a: Types.ObjectId | null, b: Types.ObjectId | null): boolean {

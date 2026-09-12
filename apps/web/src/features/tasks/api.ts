@@ -1,5 +1,6 @@
 import type {
   Paginated,
+  TaskActivityEntry,
   TaskDetail,
   TaskPriority,
   TaskStatus,
@@ -45,6 +46,14 @@ export function assignTask(taskId: string, assigneeId: string | null): Promise<T
   return apiRequest<TaskDetail>(`/tasks/${taskId}/assignee`, {
     method: 'PATCH',
     body: { assigneeId },
+  });
+}
+
+const ACTIVITY_PAGE_SIZE = 50;
+
+export function fetchTaskActivity(taskId: string): Promise<Paginated<TaskActivityEntry>> {
+  return apiRequest<Paginated<TaskActivityEntry>>(`/tasks/${taskId}/activity`, {
+    query: { page: 1, pageSize: ACTIVITY_PAGE_SIZE },
   });
 }
 

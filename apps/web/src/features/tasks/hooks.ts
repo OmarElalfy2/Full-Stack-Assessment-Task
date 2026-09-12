@@ -1,7 +1,14 @@
 'use client';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { Paginated, TaskDetail, TaskStatus, TaskSummary, UserSummary } from '@projectflow/shared';
+import type {
+  Paginated,
+  TaskActivityEntry,
+  TaskDetail,
+  TaskStatus,
+  TaskSummary,
+  UserSummary,
+} from '@projectflow/shared';
 import { queryKeys } from '@/lib/query-keys';
 import {
   assignTask,
@@ -9,6 +16,7 @@ import {
   type CreateTaskPayload,
   fetchProjectTasks,
   fetchTask,
+  fetchTaskActivity,
   updateTaskStatus,
 } from './api';
 
@@ -106,6 +114,15 @@ export function useAssignTask(taskId: string, projectId: string) {
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projectTasks(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.taskActivity(taskId) });
     },
+  });
+}
+
+export function useTaskActivity(taskId: string) {
+  return useQuery<Paginated<TaskActivityEntry>>({
+    queryKey: queryKeys.taskActivity(taskId),
+    queryFn: () => fetchTaskActivity(taskId),
+    enabled: taskId.length > 0,
   });
 }

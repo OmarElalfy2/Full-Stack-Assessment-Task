@@ -171,3 +171,127 @@ pattern (one `assertCanView`/`assertCanManage` call per request) for the
 features I added rather than introducing request-scoped caching, since that
 would be a cross-cutting change beyond this assessment's scope.
 
+---
+
+## Code Review
+
+Reviewing this as a pull request against the codebase as it stands (including
+the assignment feature built in Parts Five through Ten):
+
+```ts
+async assignTask(taskId: string, assigneeId: string, userId: string) {
+  const task = await this.taskModel.findById(taskId);
+  if (!task) { throw new NotFoundException(); }
+  const user = await this.userModel.findById(assigneeId);
+  if (!user) { throw new NotFoundException(); }
+  task.assignee = user._id;
+  await task.save();
+  return task;
+}
+```
+
+**This can't be merged as-is — it's missing every authorization and business
+rule check the feature depends on, not just some edge cases of them.**
+
+- **No project-authorization check at all.** There is no call to
+  `ProjectAccessService` anywhere in this function. Any authenticated user
+  can call this for *any task in any project*, whether or not they belong to
+  it. This is not a hypothetical: it is the exact same class of bug as the
+  live production issue investigated in Part Eleven
+  (`PATCH /tasks/:taskId/status` shipped with no authorization check, and
+  turned out to be genuinely exploitable). Merging this function would
+  reintroduce that bug on a second endpoint immediately after fixing the
+  first one.
+- **`userId` is accepted but never used.** The parameter is there — someone
+  clearly intended to check the acting user's permissions — but nothing in
+  the body ever reads it. That's worse than the parameter not existing at
+  all: it makes the function *look* reviewed for authorization at a glance,
+  when it isn't. I'd ask the author directly what they intended this
+  parameter to do, since the answer determines whether this was an
+  oversight or unfinished work.
+- **No project-membership check on the assignee (Rule 1).** The only
+  validation on `assigneeId` is `userModel.findById` — confirming a user
+  document exists *somewhere in the system*, not that they belong to this
+  task's project. Rule 1 ("only members of the project may be assigned")
+  isn't partially implemented here; it's entirely absent. The correct check
+  isn't "does this user exist", it's "is this user a member of this
+  project" — which also makes the existence check redundant once it's in
+  place, since a project-membership lookup already implies the user exists.
+- **No assignment-permission check (Rule 2).** Nothing distinguishes "a
+  manager assigning someone else" from "a regular member trying to assign
+  someone else" — both would succeed identically. Combined with the missing
+  project-authorization check above, this function has no concept of *who*
+  is allowed to do *what* to *whom*.
+- **Can't express unassignment.** `assigneeId: string` has no way to
+  represent "remove the current assignee" — the third transition Part Seven
+  explicitly requires (assigned → unassigned) is simply not reachable
+  through this signature. This isn't an edge case that's handled
+  incorrectly; it's a required transition that was never designed for.
+
+**Data consistency and correctness, beyond authorization:**
+
+- **No activity record, and no way to add one correctly.** The previous
+  assignee is overwritten (`task.assignee = user._id`) without ever being
+  read into a variable first. By the time you'd want to write a
+  `TASK_ASSIGNEE_CHANGED` entry with `{ from, to }`, `from` has already been
+  discarded. Bolting logging on afterward would require restructuring this
+  function anyway, not just adding a line.
+- **No no-op guard.** Reassigning to the current assignee still does a full
+  user lookup and a document save, and — once activity logging exists —
+  would generate a spurious "changed the assignee" entry for a change that
+  never happened. Cheap to catch, and it directly protects the accuracy of
+  the audit trail the rest of this feature depends on.
+- **Ids aren't validated the way the rest of the codebase validates them.**
+  Every other controller/service in this codebase runs incoming id strings
+  through `toObjectId(value, 'field name')`, which turns a malformed id into
+  a clean `400` instead of a raw Mongoose `CastError`. This function passes
+  `taskId`/`assigneeId` straight into `findById`, so a malformed id here
+  would surface as an unhandled 500 instead of a normal validation error.
+
+**Error handling:**
+
+- **`throw new NotFoundException()` with no message, for two different
+  failure conditions.** "Task not found" and "assignee not found" are
+  different problems a caller needs to distinguish; an empty exception body
+  makes that harder for no benefit. Every existing `NotFoundException` in
+  this codebase carries a specific message (`'Task not found'`,
+  `'Project not found'`, ...) — this doesn't follow that convention.
+- **A missing/ineligible assignee probably isn't a 404 at all.** Once the
+  check is corrected to "is this user a member of this project" (per Rule
+  1), failing that check is a business-rule violation on a valid request,
+  not a missing resource — the same shape of problem
+  `ProjectsService.addMember` already handles with
+  `BadRequestException('User does not belong to this organization')`. I'd
+  ask for the same pattern here rather than a 404.
+
+**Maintainability and architecture:**
+
+- **No separation between "what changed" and "is this change allowed".**
+  Every other mutation in `TasksService` delegates the access decision to
+  `ProjectAccessService`; this function has no equivalent, which also means
+  there's no unit-testable place to verify the authorization rule in
+  isolation from the database writes.
+- **Returns the raw Mongoose document, not a serialized shape.** Every
+  other method on this service returns a `TaskDetail`/`TaskSummary` built
+  through `toDetail`/`toSummaries`, which controls exactly which fields
+  reach the client. Returning `task` directly bypasses that and risks
+  leaking internal document shape to the API response.
+
+**Performance** is a minor note by comparison, but worth naming since it's
+one of the review dimensions: `findById(taskId)` and `findById(assigneeId)`
+run sequentially even though neither depends on the other's result; they
+could run via `Promise.all`. I'd mention this, but I wouldn't hold up the
+review on it — it's a small optimization sitting on top of a function that
+has much larger correctness problems to fix first.
+
+**What I'd ask the author to change**, in priority order: add the
+project-authorization check; replace the bare existence check on
+`assigneeId` with an actual project-membership check; implement the
+self-vs-others permission split from Rule 2; support `null` for
+unassignment; capture the previous assignee before overwriting it, and add
+an activity record; skip the write entirely on a no-op; use `toObjectId` for
+incoming ids; give exceptions specific messages and correct status codes;
+and return a serialized `TaskDetail`. I would not ask for the `Promise.all`
+change on its own merits — it's real, but it's not why this PR should be
+blocked.
+

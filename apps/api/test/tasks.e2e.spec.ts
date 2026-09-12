@@ -109,24 +109,39 @@ describe('Tasks', () => {
     // number a single atomic `$inc`, so this must always come out unique.
     const CONCURRENT_REQUESTS = 10;
 
-    const responses = await Promise.all(
-      Array.from({ length: CONCURRENT_REQUESTS }, (_, index) =>
-        request(app.getHttpServer())
-          .post(`/projects/${projectId}/tasks`)
-          .set('Authorization', authHeader(member))
-          .send({ title: `Concurrent task ${index}` }),
-      ),
-    );
+    // Explicitly listen on a random port so the server is fully ready
+    // before we fire concurrent requests. Without this, supertest lazily
+    // binds the server on first use, and 10 simultaneous requests can
+    // overwhelm that lazy binding with ECONNRESET errors.
+    const httpServer = app.getHttpServer();
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
 
-    for (const response of responses) {
-      expect(response.status).toBe(201);
+    try {
+      const agent = request.agent(httpServer);
+
+      const responses = await Promise.all(
+        Array.from({ length: CONCURRENT_REQUESTS }, (_, index) =>
+          agent
+            .post(`/projects/${projectId}/tasks`)
+            .set('Authorization', authHeader(member))
+            .send({ title: `Concurrent task ${index}` }),
+        ),
+      );
+
+      for (const response of responses) {
+        expect(response.status).toBe(201);
+      }
+
+      const numbers = responses.map((response) => response.body.number as number);
+      expect(new Set(numbers).size).toBe(CONCURRENT_REQUESTS);
+      expect([...numbers].sort((a, b) => a - b)).toEqual(
+        Array.from({ length: CONCURRENT_REQUESTS }, (_, index) => index + 1),
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        httpServer.close((err: Error | undefined) => (err ? reject(err) : resolve())),
+      );
     }
-
-    const numbers = responses.map((response) => response.body.number as number);
-    expect(new Set(numbers).size).toBe(CONCURRENT_REQUESTS);
-    expect([...numbers].sort((a, b) => a - b)).toEqual(
-      Array.from({ length: CONCURRENT_REQUESTS }, (_, index) => index + 1),
-    );
   });
 
   it('refuses to create a task for someone outside the project', async () => {

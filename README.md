@@ -199,6 +199,11 @@ Organization        ── OrganizationMember ── User      (OWNER | ADMIN | 
 Organization  ── Project
 Project             ── ProjectMember      ── User      (PROJECT_MANAGER | MEMBER)
 Project       ── Task ── Comment
+                     ── TaskActivity                    (append-only; assignee-change history)
+              ── TaskCounter                            (one row per project; not user-facing)
+
+Task.createdBy: User (who made it)
+Task.assignee:  User | null (who owns it — a separate field, not conflated with createdBy)
 ```
 
 Membership is stored in its own collection rather than as arrays on the parent
@@ -206,7 +211,17 @@ document, so it can be indexed and queried directly. Both membership
 collections carry a unique compound index on their two foreign keys.
 
 Tasks are numbered per project and identified by a human-readable key derived
-from the project key: `ENG-1`, `ENG-2`, `WEB-1`.
+from the project key: `ENG-1`, `ENG-2`, `WEB-1`. Numbers come from `TaskCounter`
+(one document per project, `_id` = the project's id), incremented atomically
+via `findOneAndUpdate` + `$inc`, seeded synchronously when the project itself
+is created. A unique `{projectId, number}` index on `Task` is the database-level
+backstop. See "Technical Decisions" below for why it's a separate collection
+rather than a field on `Project`.
+
+`TaskActivity` is an append-only log — one row per assignee change, with
+`actorId` and a `{from, to}` pair of (possibly null) user ids, resolved to
+full user summaries in the API response. Nothing in this codebase ever
+updates or deletes a row.
 
 ### Authorization
 
@@ -218,6 +233,12 @@ gates configuration and membership changes.
 
 Authentication is a JWT bearer token. `JwtAuthGuard` is registered globally;
 routes opt out with the `@Public()` decorator.
+
+**Task assignment** has its own narrower rule, checked separately from
+`canView`/`canManage`: the assignee must hold an explicit `ProjectMember` row
+(an elevated org role alone doesn't make someone assignable). Any project
+member may assign a task to themselves or clear their own assignment;
+changing *someone else's* assignment requires `canManage`.
 
 ### API surface
 
@@ -239,8 +260,10 @@ POST   /projects/:projectId/tasks
 GET    /tasks/:taskId
 PATCH  /tasks/:taskId
 PATCH  /tasks/:taskId/status
+PATCH  /tasks/:taskId/assignee
 DELETE /tasks/:taskId
 
+GET    /tasks/:taskId/activity
 GET    /tasks/:taskId/comments
 POST   /tasks/:taskId/comments
 ```
@@ -265,3 +288,67 @@ parsing.
 
 Components are server components by default; `"use client"` is added only where
 interactivity or hooks require it.
+
+---
+
+## Technical Decisions
+
+The major decisions behind the task-assignment and activity feature, and the
+two production fixes:
+
+- **Task numbering uses a dedicated `TaskCounter` collection, not a field on
+  `Project`.** Incremented atomically via `findOneAndUpdate` + `$inc`, and
+  seeded synchronously in `ProjectsService.create()` rather than lazily on a
+  project's first task. `findOneAndUpdate` with `upsert: true` is only fully
+  atomic once the target document exists — two concurrent upserts racing to
+  *create* a counter can both compute the same first value on a standalone
+  MongoDB (no replica set, so no retryable-writes safety net to catch it).
+  Creating the row at project-creation time — a moment with no concurrent
+  writer, since a project can only be created once — removes that race for
+  every new project. `upsert: true` remains as a defensive fallback for data
+  predating this design. A unique `{projectId, number}` index is the
+  database-level backstop either way.
+- **Activity is a separate append-only collection, not fields on `Task`.**
+  So history can grow and page independently of the task it describes.
+  Actor/from/to users are resolved to full summaries in one batched query per
+  page, not one query per row.
+- **No transaction between the task write and the activity write.** Two
+  sequential writes, matching every other multi-write path already in this
+  codebase (`TasksService.remove()`'s `Promise.all` of two deletes). The
+  local/test MongoDB is standalone — transactions aren't available without
+  moving to a replica set first, which felt like a bigger change to make
+  silently than documenting the gap.
+- **`PATCH /tasks/:taskId/status`'s authorization fix uses `assertCanView`,
+  not the stricter `assertCanManage`.** Matches the existing permission level
+  of `create`/`findOne` (any project member), since moving a task through its
+  workflow is routine for any member and the frontend never gated it by
+  role. Fixing the reported bug (outsiders) without also newly restricting
+  legitimate members was the goal.
+- **No new dependencies.** The assignee selector's search is a plain
+  filtered `<input>` inside the existing `DropdownMenu` primitive, not a new
+  combobox library; the activity timeline's relative timestamps use
+  `Intl.RelativeTimeFormat`, not a date library.
+
+## Known Limitations
+
+- **Assignment and activity writes aren't transactional** (see above). A
+  crash between the two leaves the assignment change without its log entry.
+  Needs a replica-set MongoDB plus a session transaction before this is
+  production-ready.
+- **No rate limiting or account lockout on `/auth/login` or `/auth/register`**,
+  and JWTs are long-lived (7 days by default) with no revocation mechanism.
+  Pre-existing, not touched by this work.
+- **A comment from a deleted user disappears entirely** rather than showing
+  a placeholder, inconsistent with how tasks handle the same situation for
+  `createdBy`/`assignee`. Pre-existing; the assignment/activity features
+  added here use the consistent placeholder, but the comments code path
+  wasn't retrofitted.
+- **Activity pagination is offset-based** (`page`/`pageSize`), matching every
+  other list endpoint in this API. Fine at current data volumes; would need
+  to move to cursor-based pagination well before activity history reaches
+  meaningful scale (see `ASSESSMENT_NOTES.md`'s Scaling section).
+- **The project-member picker in the assignee selector loads the full member
+  list client-side** and filters in the browser past a small threshold.
+  Fine for typical project sizes; would need a server-side search endpoint
+  for very large projects.
+
